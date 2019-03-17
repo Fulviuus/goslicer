@@ -18,7 +18,7 @@ go get github.com/solovev/gopsd
 The tool will run on all psd files found in the current folder, and layers will be extracted according to their naming.
 Given this example:
 
-![screenshot-layers](https://raw.githubusercontent.com/fulviuus/goslicer/master/_assets/screenshot-layers.png | width=500)
+![screenshot-layers](https://raw.githubusercontent.com/fulviuus/goslicer/master/_assets/screenshot-layers.png)
 
 Ths following steps will happen:
 

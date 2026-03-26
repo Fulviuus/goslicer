@@ -23,11 +23,6 @@
     }
   },
   "plugins": {
-    "fs": {
-      "scope": {
-        "allow": ["**"]
-      }
-    },
     "shell": {
       "open": true
     }

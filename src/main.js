@@ -7,12 +7,6 @@ async function init() {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
 
-  // Dialog open might be under different paths in Tauri v2
-  let openDialog;
-  if (window.__TAURI__.dialog) {
-    openDialog = window.__TAURI__.dialog.open;
-  }
-
   const dropZone = document.getElementById('drop-zone');
   const processing = document.getElementById('processing');
   const results = document.getElementById('results');
@@ -23,16 +17,15 @@ async function init() {
 
   let currentOutputDir = '';
 
-  // --- Drop Zone Click ---
+  // --- Drop Zone Click → open native file picker ---
   dropZone.addEventListener('click', async () => {
-    if (openDialog) {
-      const selected = await openDialog({
-        multiple: false,
-        filters: [{ name: 'Photoshop Files', extensions: ['psd'] }],
-      });
-      if (selected) {
-        processFile(typeof selected === 'string' ? selected : selected.path);
+    try {
+      const filePath = await invoke('pick_psd_file');
+      if (filePath) {
+        processFile(filePath);
       }
+    } catch (err) {
+      console.error('File dialog error:', err);
     }
   });
 
@@ -88,8 +81,6 @@ async function init() {
     const card = document.createElement('div');
     card.className = 'layer-card';
     card.style.animationDelay = `${index * 80}ms`;
-    card.draggable = true;
-
     const ext = layer.name.split('.').pop().toLowerCase();
     const isFullSize = layer.name.startsWith('_');
 
@@ -129,11 +120,38 @@ async function init() {
     card.appendChild(preview);
     card.appendChild(meta);
 
-    // Native file drag
-    card.addEventListener('dragstart', (e) => {
-      e.dataTransfer.setData('text/uri-list', 'file://' + layer.saved_path);
-      e.dataTransfer.setData('text/plain', layer.saved_path);
-      e.dataTransfer.effectAllowed = 'copy';
+    // Native file drag via tauri-plugin-drag
+    card.draggable = false; // disable HTML5 drag, use native OS drag instead
+    card.addEventListener('mousedown', async (e) => {
+      if (e.button !== 0) return;
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const onMove = async (moveEvt) => {
+        const dx = moveEvt.clientX - startX;
+        const dy = moveEvt.clientY - startY;
+        if (Math.abs(dx) + Math.abs(dy) > 5) {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          try {
+            const { Channel } = window.__TAURI__.core;
+            const ch = new Channel();
+            await invoke('plugin:drag|start_drag', {
+              item: [layer.saved_path],
+              image: layer.saved_path,
+              options: {},
+              onEvent: ch,
+            });
+          } catch (err) {
+            console.error('Native drag failed:', err);
+          }
+        }
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
     });
 
     return card;

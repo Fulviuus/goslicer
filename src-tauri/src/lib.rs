@@ -68,28 +68,52 @@ fn process_psd(file_path: String) -> Result<ProcessResult, String> {
             continue;
         }
 
+        // The psd crate may return rgba data sized to the full document rather than the layer.
+        // Detect which case we're in and handle accordingly.
+        let expected_layer_bytes = (lw as usize) * (lh as usize) * 4;
+        let expected_doc_bytes = (doc_width as usize) * (doc_height as usize) * 4;
+        let data_is_doc_sized = rgba_data.len() == expected_doc_bytes && rgba_data.len() != expected_layer_bytes;
+
         // Check if layer name starts with _ (keep original size)
         let keep_original = layer_name.starts_with('_');
 
-        let img: RgbaImage = if keep_original {
-            let mut canvas =
-                ImageBuffer::<Rgba<u8>, Vec<u8>>::new(doc_width as u32, doc_height as u32);
-            if let Some(layer_img) = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(lw, lh, rgba_data)
-            {
-                image::imageops::overlay(
-                    &mut canvas,
-                    &layer_img,
-                    ll as i64,
-                    lt as i64,
-                );
+        let img: RgbaImage = if keep_original || data_is_doc_sized {
+            // Data is already document-sized — use it directly as full canvas
+            if data_is_doc_sized {
+                ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(doc_width as u32, doc_height as u32, rgba_data)
+                    .ok_or_else(|| format!("Failed to create doc-sized image for layer {}", layer_name))?
+            } else {
+                let mut canvas =
+                    ImageBuffer::<Rgba<u8>, Vec<u8>>::new(doc_width as u32, doc_height as u32);
+                if let Some(layer_img) = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(lw, lh, rgba_data)
+                {
+                    image::imageops::overlay(
+                        &mut canvas,
+                        &layer_img,
+                        ll as i64,
+                        lt as i64,
+                    );
+                }
+                canvas
             }
-            canvas
         } else {
+            let data_len = rgba_data.len();
             ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(lw, lh, rgba_data)
-                .ok_or_else(|| format!("Failed to create image for layer {}", layer_name))?
+                .ok_or_else(|| format!("Failed to create image for layer {} (expected {} bytes, got {})", layer_name, expected_layer_bytes, data_len))?
         };
 
-        let dynamic_img = DynamicImage::ImageRgba8(img.clone());
+        // If data was doc-sized but layer is not marked as full-size, crop to layer bounds
+        let dynamic_img = if data_is_doc_sized && !keep_original {
+            let x = ll.max(0) as u32;
+            let y = lt.max(0) as u32;
+            let crop_w = lw.min(doc_width as u32 - x);
+            let crop_h = lh.min(doc_height as u32 - y);
+            DynamicImage::ImageRgba8(img).crop_imm(x, y, crop_w, crop_h)
+        } else {
+            DynamicImage::ImageRgba8(img)
+        };
+
+        let (save_w, save_h) = (dynamic_img.width(), dynamic_img.height());
 
         // Save to disk
         let save_path = output_dir.join(&layer_name);
@@ -98,7 +122,9 @@ fn process_psd(file_path: String) -> Result<ProcessResult, String> {
                 .save_with_format(&save_path, ImageFormat::Png)
                 .map_err(|e| format!("Failed to save PNG: {}", e))?;
         } else {
-            dynamic_img
+            // JPEG doesn't support alpha — convert RGBA → RGB before saving
+            let rgb_img = DynamicImage::ImageRgb8(dynamic_img.to_rgb8());
+            rgb_img
                 .save_with_format(&save_path, ImageFormat::Jpeg)
                 .map_err(|e| format!("Failed to save JPG: {}", e))?;
         }
@@ -113,8 +139,8 @@ fn process_psd(file_path: String) -> Result<ProcessResult, String> {
 
         layers_info.push(LayerInfo {
             name: layer_name,
-            width: if keep_original { doc_width as u32 } else { lw },
-            height: if keep_original { doc_height as u32 } else { lh },
+            width: save_w,
+            height: save_h,
             top: lt,
             left: ll,
             preview_data_url: data_url,
@@ -130,6 +156,17 @@ fn process_psd(file_path: String) -> Result<ProcessResult, String> {
 }
 
 #[tauri::command]
+async fn pick_psd_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let file = app
+        .dialog()
+        .file()
+        .add_filter("Photoshop Files", &["psd"])
+        .blocking_pick_file();
+    Ok(file.map(|f| f.into_path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()))
+}
+
+#[tauri::command]
 fn open_folder(path: String) -> Result<(), String> {
     open::that(&path).map_err(|e| format!("Failed to open folder: {}", e))
 }
@@ -139,7 +176,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![process_psd, open_folder])
+        .plugin(tauri_plugin_drag::init())
+        .invoke_handler(tauri::generate_handler![process_psd, pick_psd_file, open_folder])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

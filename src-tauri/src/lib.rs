@@ -1,10 +1,13 @@
 use base64::Engine;
 use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba, RgbaImage};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use psd::Psd;
 use serde::Serialize;
 use std::fs;
 use std::io::Cursor;
 use std::path::Path;
+use std::sync::Mutex;
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Clone, Serialize)]
 struct LayerInfo {
@@ -22,6 +25,11 @@ struct ProcessResult {
     file_name: String,
     output_dir: String,
     layers: Vec<LayerInfo>,
+    composite_preview: String,
+}
+
+struct WatcherState {
+    watcher: Option<RecommendedWatcher>,
 }
 
 #[tauri::command]
@@ -43,6 +51,27 @@ fn process_psd(file_path: String) -> Result<ProcessResult, String> {
 
     let doc_width = psd.width();
     let doc_height = psd.height();
+
+    // Generate composite preview from PSD's stored flattened image
+    let composite_rgba = psd.rgba();
+    let composite_preview = {
+        let comp_img: RgbaImage =
+            ImageBuffer::from_raw(doc_width as u32, doc_height as u32, composite_rgba)
+                .ok_or("Failed to create composite image")?;
+        let dynamic = DynamicImage::ImageRgba8(comp_img);
+        // Resize for preview (max 400px wide)
+        let preview = if doc_width > 400 {
+            dynamic.resize(400, 400, image::imageops::FilterType::Lanczos3)
+        } else {
+            dynamic
+        };
+        let mut buf = Cursor::new(Vec::new());
+        preview
+            .write_to(&mut buf, ImageFormat::Png)
+            .map_err(|e| format!("Failed to encode composite: {}", e))?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
+        format!("data:image/png;base64,{}", b64)
+    };
 
     let mut layers_info = Vec::new();
 
@@ -68,68 +97,39 @@ fn process_psd(file_path: String) -> Result<ProcessResult, String> {
             continue;
         }
 
-        // The psd crate may return rgba data sized to the full document rather than the layer.
-        // Detect which case we're in and handle accordingly.
-        let expected_layer_bytes = (lw as usize) * (lh as usize) * 4;
-        let expected_doc_bytes = (doc_width as usize) * (doc_height as usize) * 4;
-        let data_is_doc_sized = rgba_data.len() == expected_doc_bytes && rgba_data.len() != expected_layer_bytes;
+        let full_img = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(
+            doc_width as u32,
+            doc_height as u32,
+            rgba_data,
+        )
+        .ok_or_else(|| format!("Failed to create image for layer {}", layer_name))?;
 
-        // Check if layer name starts with _ (keep original size)
         let keep_original = layer_name.starts_with('_');
 
-        let img: RgbaImage = if keep_original || data_is_doc_sized {
-            // Data is already document-sized — use it directly as full canvas
-            if data_is_doc_sized {
-                ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(doc_width as u32, doc_height as u32, rgba_data)
-                    .ok_or_else(|| format!("Failed to create doc-sized image for layer {}", layer_name))?
-            } else {
-                let mut canvas =
-                    ImageBuffer::<Rgba<u8>, Vec<u8>>::new(doc_width as u32, doc_height as u32);
-                if let Some(layer_img) = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(lw, lh, rgba_data)
-                {
-                    image::imageops::overlay(
-                        &mut canvas,
-                        &layer_img,
-                        ll as i64,
-                        lt as i64,
-                    );
-                }
-                canvas
-            }
+        let img: RgbaImage = if keep_original {
+            full_img
         } else {
-            let data_len = rgba_data.len();
-            ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(lw, lh, rgba_data)
-                .ok_or_else(|| format!("Failed to create image for layer {} (expected {} bytes, got {})", layer_name, expected_layer_bytes, data_len))?
+            let crop_x = ll.max(0) as u32;
+            let crop_y = lt.max(0) as u32;
+            let crop_w = lw.min(doc_width as u32 - crop_x);
+            let crop_h = lh.min(doc_height as u32 - crop_y);
+            image::imageops::crop_imm(&full_img, crop_x, crop_y, crop_w, crop_h).to_image()
         };
 
-        // If data was doc-sized but layer is not marked as full-size, crop to layer bounds
-        let dynamic_img = if data_is_doc_sized && !keep_original {
-            let x = ll.max(0) as u32;
-            let y = lt.max(0) as u32;
-            let crop_w = lw.min(doc_width as u32 - x);
-            let crop_h = lh.min(doc_height as u32 - y);
-            DynamicImage::ImageRgba8(img).crop_imm(x, y, crop_w, crop_h)
-        } else {
-            DynamicImage::ImageRgba8(img)
-        };
+        let dynamic_img = DynamicImage::ImageRgba8(img.clone());
 
-        let (save_w, save_h) = (dynamic_img.width(), dynamic_img.height());
-
-        // Save to disk
         let save_path = output_dir.join(&layer_name);
         if ext == "png" {
             dynamic_img
                 .save_with_format(&save_path, ImageFormat::Png)
                 .map_err(|e| format!("Failed to save PNG: {}", e))?;
         } else {
-            // JPEG doesn't support alpha — convert RGBA → RGB before saving
-            let rgb_img = DynamicImage::ImageRgb8(dynamic_img.to_rgb8());
-            rgb_img
+            let rgb_img = dynamic_img.to_rgb8();
+            DynamicImage::ImageRgb8(rgb_img)
                 .save_with_format(&save_path, ImageFormat::Jpeg)
                 .map_err(|e| format!("Failed to save JPG: {}", e))?;
         }
 
-        // Generate base64 preview (always PNG for preview)
         let mut preview_buf = Cursor::new(Vec::new());
         dynamic_img
             .write_to(&mut preview_buf, ImageFormat::Png)
@@ -139,8 +139,8 @@ fn process_psd(file_path: String) -> Result<ProcessResult, String> {
 
         layers_info.push(LayerInfo {
             name: layer_name,
-            width: save_w,
-            height: save_h,
+            width: img.width(),
+            height: img.height(),
             top: lt,
             left: ll,
             preview_data_url: data_url,
@@ -152,18 +152,51 @@ fn process_psd(file_path: String) -> Result<ProcessResult, String> {
         file_name,
         output_dir: output_dir.to_string_lossy().to_string(),
         layers: layers_info,
+        composite_preview,
     })
 }
 
 #[tauri::command]
-async fn pick_psd_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::DialogExt;
-    let file = app
-        .dialog()
-        .file()
-        .add_filter("Photoshop Files", &["psd"])
-        .blocking_pick_file();
-    Ok(file.map(|f| f.into_path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()))
+fn watch_file(app: AppHandle, file_path: String) -> Result<(), String> {
+    let state = app.state::<Mutex<WatcherState>>();
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+
+    // Stop existing watcher
+    state.watcher = None;
+
+    let path = Path::new(&file_path).to_path_buf();
+    let app_handle = app.clone();
+    let watched_path = path.clone();
+
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<Event, notify::Error>| {
+            if let Ok(event) = res {
+                if matches!(
+                    event.kind,
+                    EventKind::Modify(_) | EventKind::Create(_)
+                ) {
+                    let _ = app_handle.emit("file-changed", watched_path.to_string_lossy().to_string());
+                }
+            }
+        },
+        notify::Config::default(),
+    )
+    .map_err(|e| format!("Failed to create watcher: {}", e))?;
+
+    watcher
+        .watch(path.as_path(), RecursiveMode::NonRecursive)
+        .map_err(|e| format!("Failed to watch file: {}", e))?;
+
+    state.watcher = Some(watcher);
+    Ok(())
+}
+
+#[tauri::command]
+fn unwatch_file(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<Mutex<WatcherState>>();
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    state.watcher = None;
+    Ok(())
 }
 
 #[tauri::command]
@@ -176,8 +209,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_drag::init())
-        .invoke_handler(tauri::generate_handler![process_psd, pick_psd_file, open_folder])
+        .manage(Mutex::new(WatcherState { watcher: None }))
+        .invoke_handler(tauri::generate_handler![
+            process_psd,
+            open_folder,
+            watch_file,
+            unwatch_file,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

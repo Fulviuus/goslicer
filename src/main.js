@@ -1,4 +1,3 @@
-// Wait for Tauri to be ready
 document.addEventListener('DOMContentLoaded', () => {
   init();
 });
@@ -7,35 +6,61 @@ async function init() {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
 
+  function getOpenDialog() {
+    if (window.__TAURI__?.dialog?.open) {
+      return window.__TAURI__.dialog.open;
+    }
+    return null;
+  }
+
   const dropZone = document.getElementById('drop-zone');
+  const dropZoneEmpty = document.getElementById('drop-zone-empty');
+  const dropZonePreview = document.getElementById('drop-zone-preview');
+  const sourcePreviewImg = document.getElementById('source-preview-img');
+  const sourceName = document.getElementById('source-name');
   const processing = document.getElementById('processing');
   const results = document.getElementById('results');
   const layersGrid = document.getElementById('layers-grid');
   const resultsTitle = document.getElementById('results-title');
+  const headerActions = document.getElementById('header-actions');
   const openFolderBtn = document.getElementById('open-folder-btn');
   const resetBtn = document.getElementById('reset-btn');
 
   let currentOutputDir = '';
+  let currentFilePath = '';
 
-  // --- Drop Zone Click → open native file picker ---
+  // --- Drop Zone Click ---
   dropZone.addEventListener('click', async () => {
-    try {
-      const filePath = await invoke('pick_psd_file');
-      if (filePath) {
-        processFile(filePath);
+    const openDialog = getOpenDialog();
+    if (openDialog) {
+      try {
+        const selected = await openDialog({
+          multiple: false,
+          filters: [{ name: 'Photoshop Files', extensions: ['psd'] }],
+        });
+        if (selected) {
+          processFile(typeof selected === 'string' ? selected : selected.path);
+        }
+      } catch (err) {
+        console.error('Dialog error:', err);
+        showError('Failed to open file dialog: ' + err);
       }
-    } catch (err) {
-      console.error('File dialog error:', err);
+    } else {
+      console.error('Dialog API not available.');
+      showError('File dialog not available — check app permissions.');
     }
   });
 
   // --- Tauri v2 file drop events ---
   listen('tauri://drag-drop', (event) => {
+    dropZone.classList.remove('drag-over');
     const paths = event.payload.paths;
     if (paths && paths.length > 0) {
       const file = paths[0];
       if (file.toLowerCase().endsWith('.psd')) {
         processFile(file);
+      } else {
+        showError('Please drop a .psd file');
       }
     }
   });
@@ -48,9 +73,16 @@ async function init() {
     dropZone.classList.remove('drag-over');
   });
 
+  // --- File change watcher ---
+  listen('file-changed', () => {
+    if (currentFilePath) {
+      processFile(currentFilePath);
+    }
+  });
+
   // --- Process File ---
   async function processFile(filePath) {
-    dropZone.classList.add('hidden');
+    // Show spinner, hide layers while processing
     results.classList.add('hidden');
     processing.classList.remove('hidden');
     layersGrid.innerHTML = '';
@@ -58,12 +90,30 @@ async function init() {
     try {
       const result = await invoke('process_psd', { filePath });
       currentOutputDir = result.output_dir;
+      currentFilePath = filePath;
+
+      // Show the composite preview in the drop zone (image stays visible)
+      dropZone.classList.add('has-file');
+      dropZoneEmpty.classList.add('hidden');
+      dropZonePreview.classList.remove('hidden');
+      sourcePreviewImg.src = result.composite_preview;
+      sourceName.textContent = result.file_name + '.psd';
+
+      // Show header buttons
+      headerActions.classList.remove('hidden');
+
+      // Start watching for file changes
+      try {
+        await invoke('watch_file', { filePath });
+      } catch (e) {
+        console.warn('File watch failed:', e);
+      }
 
       processing.classList.add('hidden');
       results.classList.remove('hidden');
 
       const count = result.layers.length;
-      resultsTitle.textContent = `${result.file_name} — ${count} layer${count !== 1 ? 's' : ''} extracted`;
+      resultsTitle.textContent = `${count} layer${count !== 1 ? 's' : ''} extracted`;
 
       result.layers.forEach((layer, index) => {
         const card = createLayerCard(layer, index);
@@ -71,7 +121,13 @@ async function init() {
       });
     } catch (err) {
       processing.classList.add('hidden');
-      dropZone.classList.remove('hidden');
+      if (!currentFilePath) {
+        dropZone.classList.remove('has-file');
+        dropZoneEmpty.classList.remove('hidden');
+        dropZonePreview.classList.add('hidden');
+      } else {
+        results.classList.remove('hidden');
+      }
       showError('Error processing PSD: ' + err);
     }
   }
@@ -81,6 +137,8 @@ async function init() {
     const card = document.createElement('div');
     card.className = 'layer-card';
     card.style.animationDelay = `${index * 80}ms`;
+    card.draggable = true;
+
     const ext = layer.name.split('.').pop().toLowerCase();
     const isFullSize = layer.name.startsWith('_');
 
@@ -120,38 +178,11 @@ async function init() {
     card.appendChild(preview);
     card.appendChild(meta);
 
-    // Native file drag via tauri-plugin-drag
-    card.draggable = false; // disable HTML5 drag, use native OS drag instead
-    card.addEventListener('mousedown', async (e) => {
-      if (e.button !== 0) return;
-      const startX = e.clientX;
-      const startY = e.clientY;
-      const onMove = async (moveEvt) => {
-        const dx = moveEvt.clientX - startX;
-        const dy = moveEvt.clientY - startY;
-        if (Math.abs(dx) + Math.abs(dy) > 5) {
-          document.removeEventListener('mousemove', onMove);
-          document.removeEventListener('mouseup', onUp);
-          try {
-            const { Channel } = window.__TAURI__.core;
-            const ch = new Channel();
-            await invoke('plugin:drag|start_drag', {
-              item: [layer.saved_path],
-              image: layer.saved_path,
-              options: {},
-              onEvent: ch,
-            });
-          } catch (err) {
-            console.error('Native drag failed:', err);
-          }
-        }
-      };
-      const onUp = () => {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-      };
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
+    // Native file drag
+    card.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/uri-list', 'file://' + layer.saved_path);
+      e.dataTransfer.setData('text/plain', layer.saved_path);
+      e.dataTransfer.effectAllowed = 'copy';
     });
 
     return card;
@@ -177,10 +208,19 @@ async function init() {
     }
   });
 
-  resetBtn.addEventListener('click', () => {
+  resetBtn.addEventListener('click', async () => {
     results.classList.add('hidden');
-    dropZone.classList.remove('hidden');
+    headerActions.classList.add('hidden');
+    dropZone.classList.remove('has-file');
+    dropZoneEmpty.classList.remove('hidden');
+    dropZonePreview.classList.add('hidden');
     layersGrid.innerHTML = '';
     currentOutputDir = '';
+    currentFilePath = '';
+    try {
+      await invoke('unwatch_file');
+    } catch (e) {
+      // ignore
+    }
   });
 }

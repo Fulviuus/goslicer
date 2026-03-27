@@ -18,12 +18,21 @@
         </svg>
         <h1>GoSlicer</h1>
       </div>
-      <p class="subtitle">Drop a PSD file to extract its layers</p>
+      <div id="header-actions" class="header-actions hidden">
+        <button id="open-folder-btn" class="btn btn-secondary">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4v8a1 1 0 001 1h10a1 1 0 001-1V6a1 1 0 00-1-1H8L6.5 3.5A1 1 0 005.8 3H3a1 1 0 00-1 1z" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+          Open Folder
+        </button>
+        <button id="reset-btn" class="btn btn-primary">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8a6 6 0 1111.5-2.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M14 2v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          New File
+        </button>
+      </div>
     </header>
 
     <main>
       <div id="drop-zone" class="drop-zone">
-        <div class="drop-zone-content">
+        <div class="drop-zone-content" id="drop-zone-empty">
           <div class="drop-icon">
             <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
               <rect x="8" y="12" width="48" height="40" rx="4" stroke="currentColor" stroke-width="2" fill="none" opacity="0.3"/>
@@ -35,6 +44,13 @@
           <p class="drop-text">Drag & Drop PSD file here</p>
           <p class="drop-hint">or click to browse</p>
         </div>
+        <div class="drop-zone-content hidden" id="drop-zone-preview">
+          <img id="source-preview-img" class="source-preview-img" alt="PSD preview" />
+          <div class="source-info">
+            <p class="source-name" id="source-name"></p>
+            <p class="drop-hint">Drop a new file or click to replace</p>
+          </div>
+        </div>
         <div class="drop-zone-pulse"></div>
       </div>
 
@@ -44,19 +60,7 @@
       </div>
 
       <div id="results" class="results hidden">
-        <div class="results-header">
-          <h2 id="results-title">Extracted Layers</h2>
-          <div class="results-actions">
-            <button id="open-folder-btn" class="btn btn-secondary">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4v8a1 1 0 001 1h10a1 1 0 001-1V6a1 1 0 00-1-1H8L6.5 3.5A1 1 0 005.8 3H3a1 1 0 00-1 1z" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
-              Open Folder
-            </button>
-            <button id="reset-btn" class="btn btn-primary">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8a6 6 0 1111.5-2.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M14 2v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              New File
-            </button>
-          </div>
-        </div>
+        <h2 id="results-title" class="results-title">Extracted Layers</h2>
         <div id="layers-grid" class="layers-grid"></div>
       </div>
     </main>

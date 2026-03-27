@@ -21,31 +21,40 @@
   box-sizing: border-box;
 }
 
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
-  min-height: 100vh;
-  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
 }
 
 #app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 32px;
   max-width: 1000px;
   margin: 0 auto;
-  padding: 40px 32px;
 }
 
 /* Header */
 header {
-  margin-bottom: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  margin-bottom: 24px;
 }
 
 .logo {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 8px;
 }
 
 .logo h1 {
@@ -57,10 +66,18 @@ header {
   background-clip: text;
 }
 
-.subtitle {
-  color: var(--text-dim);
-  font-size: 14px;
-  margin-left: 44px;
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Main content fills remaining space */
+main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 16px;
 }
 
 /* Drop Zone */
@@ -74,6 +91,15 @@ header {
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   background: var(--bg-drop);
   overflow: hidden;
+  flex-shrink: 0;
+}
+
+/* When no file loaded, drop zone fills the space */
+main:not(:has(.results:not(.hidden))) .drop-zone:not(.has-file) {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .drop-zone::before {
@@ -139,10 +165,52 @@ header {
   color: var(--text-dim);
 }
 
+/* Source preview (loaded state of drop zone) */
+.drop-zone.has-file {
+  padding: 16px;
+  border-style: solid;
+  border-color: var(--border);
+}
+
+.drop-zone.has-file:hover {
+  border-color: var(--accent);
+}
+
+.drop-zone.has-file .drop-zone-content {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  text-align: left;
+}
+
+.source-preview-img {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: repeating-conic-gradient(#1e1e30 0% 25%, #16162a 0% 50%) 50% / 12px 12px;
+  flex-shrink: 0;
+}
+
+.source-info {
+  min-width: 0;
+}
+
+.source-name {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 2px;
+}
+
 /* Processing */
 .processing {
   text-align: center;
   padding: 80px 0;
+  flex-shrink: 0;
 }
 
 .processing p {
@@ -166,64 +234,29 @@ header {
 }
 
 /* Results */
-.results-header {
+.results {
+  flex: 1;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 24px;
+  flex-direction: column;
+  min-height: 0;
 }
 
-.results-header h2 {
-  font-size: 18px;
+.results-title {
+  font-size: 16px;
   font-weight: 600;
+  flex-shrink: 0;
+  margin-bottom: 12px;
+  color: var(--text-dim);
 }
 
-.results-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  border: none;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  font-family: inherit;
-}
-
-.btn-primary {
-  background: var(--accent);
-  color: white;
-}
-
-.btn-primary:hover {
-  background: var(--accent-light);
-  transform: translateY(-1px);
-}
-
-.btn-secondary {
-  background: var(--bg-card);
-  color: var(--text);
-  border: 1px solid var(--border);
-}
-
-.btn-secondary:hover {
-  background: var(--bg-card-hover);
-  border-color: var(--accent);
-  transform: translateY(-1px);
-}
-
-/* Layers Grid */
+/* Layers Grid — scrollable */
 .layers-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  overflow-y: auto;
+  flex: 1;
+  padding-right: 4px;
 }
 
 .layer-card {
@@ -268,7 +301,7 @@ header {
 
 .layer-preview {
   position: relative;
-  height: 160px;
+  height: 140px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -290,17 +323,17 @@ header {
 }
 
 .layer-meta {
-  padding: 12px;
+  padding: 10px;
   border-top: 1px solid var(--border);
 }
 
 .layer-name {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
 }
 
 .layer-dims {
@@ -344,6 +377,42 @@ header {
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+}
+
+.btn-primary:hover {
+  background: var(--accent-light);
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
 /* Hidden */
 .hidden {
   display: none !important;
@@ -370,7 +439,7 @@ header {
 /* Responsive */
 @media (max-width: 600px) {
   #app {
-    padding: 24px 16px;
+    padding: 16px;
   }
 
   .drop-zone {
@@ -378,7 +447,7 @@ header {
   }
 
   .layers-grid {
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 8px;
   }
 }
